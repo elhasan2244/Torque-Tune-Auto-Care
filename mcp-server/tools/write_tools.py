@@ -46,6 +46,43 @@ def _part_exists(cursor, part_id: int) -> bool:
     return cursor.fetchone() is not None
 
 
+def _part_number_exists(cursor, part_number: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM SpareParts WHERE part_number = ?",
+        (part_number,)
+    )
+    return cursor.fetchone() is not None
+
+
+def _category_exists(cursor, category_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM Categories WHERE id = ?",
+        (category_id,)
+    )
+    return cursor.fetchone() is not None
+
+
+def _supplier_exists(cursor, supplier_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM Suppliers WHERE id = ?",
+        (supplier_id,)
+    )
+    return cursor.fetchone() is not None
+
+
+def _resolve_user_role(cursor, user_id: int) -> str:
+    """
+    Look up a user's role server-side, the same pattern update_inventory
+    already uses: authorization is based on the role stored in Users for
+    this user_id, never a role the caller merely claims.
+    """
+    cursor.execute("SELECT role FROM Users WHERE id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    if user_row is None:
+        raise AuthorizationError(f"User {user_id} not found.")
+    return user_row[0]
+
+
 # -----------------------------
 # Update Inventory
 # -----------------------------
@@ -172,24 +209,57 @@ async def update_inventory(
 def add_spare_part(
     part_id: int | None,
     part_name: str,
+    part_number: str,
+    category_id: int,
+    supplier_id: int,
     quantity: int,
-    user_role: str
+    price: float,
+    location: str,
+    user_id: int,
+    minimum_stock: int = 5,
+    status: str = "active",
 ):
     """
-    Add a new spare part to the inventory.
-    Only managers and admins are allowed.
+    Add a new spare part to the inventory. Manager role required.
+
+    part_number, category_id, supplier_id, price, and location are all
+    required by the SpareParts schema (see databases/schema.sql) -- every
+    field here maps directly to a NOT NULL column on that table.
     """
 
-    require_manager(user_role)
+    # Cheap, DB-independent checks fail fast before opening a connection --
+    # same fail-fast behavior the previous implementation had.
     _ensure_non_negative(quantity)
 
     if not part_name.strip():
         raise ValueError("Part name cannot be empty.")
+    if not part_number.strip():
+        raise ValueError("Part number cannot be empty.")
+    if not location.strip():
+        raise ValueError("Location cannot be empty.")
+    if price < 0:
+        raise ValueError("Price cannot be negative.")
+    if minimum_stock < 0:
+        raise ValueError("Minimum stock cannot be negative.")
+    if status not in {"active", "discontinued"}:
+        raise ValueError("Status must be 'active' or 'discontinued'.")
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
+        # Authorization happens in the handler, against the role the server
+        # looks up for user_id — never against a role the caller merely claims.
+        user_role = _resolve_user_role(cursor, user_id)
+        require_manager(user_role)
+
+        if not _category_exists(cursor, category_id):
+            raise ValueError(f"Category {category_id} does not exist.")
+        if not _supplier_exists(cursor, supplier_id):
+            raise ValueError(f"Supplier {supplier_id} does not exist.")
+        if _part_number_exists(cursor, part_number):
+            raise ValueError(f"Part number '{part_number}' already exists.")
+
         # Insert with manually provided ID
         if part_id is not None:
 
@@ -199,10 +269,10 @@ def add_spare_part(
             cursor.execute(
                 """
                 INSERT INTO SpareParts
-                (id, part_name, quantity)
-                VALUES (?, ?, ?)
+                (id, part_name, part_number, category_id, supplier_id, quantity, price, location, minimum_stock, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (part_id, part_name, quantity)
+                (part_id, part_name, part_number, category_id, supplier_id, quantity, price, location, minimum_stock, status)
             )
 
         # Let database generate the ID
@@ -211,10 +281,10 @@ def add_spare_part(
             cursor.execute(
                 """
                 INSERT INTO SpareParts
-                (part_name, quantity)
-                VALUES (?, ?)
+                (part_name, part_number, category_id, supplier_id, quantity, price, location, minimum_stock, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (part_name, quantity)
+                (part_name, part_number, category_id, supplier_id, quantity, price, location, minimum_stock, status)
             )
 
             part_id = cursor.lastrowid
@@ -234,7 +304,9 @@ def add_spare_part(
             content={
                 "part_id": part_id,
                 "part_name": part_name,
+                "part_number": part_number,
                 "quantity": quantity,
+                "user_id": user_id,
                 "user_role": user_role
             },
             promotion_reason="New spare part added to the inventory."
@@ -256,19 +328,21 @@ def add_spare_part(
 @mcp.tool()
 def delete_spare_part(
     part_id: int,
-    user_role: str
+    user_id: int
 ):
     """
-    Delete a spare part from the inventory.
-    Only managers and admins are allowed.
+    Delete a spare part from the inventory. Manager role required.
     """
-
-    require_manager(user_role)
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
+        # Authorization happens in the handler, against the role the server
+        # looks up for user_id — never against a role the caller merely claims.
+        user_role = _resolve_user_role(cursor, user_id)
+        require_manager(user_role)
+
         if not _part_exists(cursor, part_id):
             raise ValueError("Spare part not found.")
 
@@ -294,6 +368,7 @@ def delete_spare_part(
             event_type="spare_part_deleted",
             content={
                 "part_id": part_id,
+                "user_id": user_id,
                 "user_role": user_role
             },
             promotion_reason="Spare part permanently removed from the inventory."

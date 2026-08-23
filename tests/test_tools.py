@@ -165,23 +165,44 @@ from tools.write_tools import (
     delete_spare_part,
     generate_inventory_report,
 )
+from validation.validators import AuthorizationError
+
+
+# Shared valid payload for the fields the SpareParts schema requires
+# (see databases/schema.sql). Individual tests override only what they
+# need to override.
+VALID_PART_KWARGS = dict(
+    part_name="Brake Pad",
+    part_number="BRK-999",
+    category_id=1,
+    supplier_id=1,
+    quantity=20,
+    price=42.50,
+    location="A1-01",
+)
 
 
 class TestAddSparePart:
 
     @patch("tools.write_tools.spare_part_added")
     @patch("tools.write_tools.get_connection")
-    @patch("tools.write_tools.require_manager")
     def test_add_spare_part_with_id(
         self,
-        mock_require_manager,
         mock_get_connection,
         mock_notification
     ):
         conn = MagicMock()
         cursor = MagicMock()
 
-        cursor.fetchone.return_value = None
+        # Calls in order: _resolve_user_role, _category_exists,
+        # _supplier_exists, _part_number_exists, _part_exists(part_id).
+        cursor.fetchone.side_effect = [
+            ("manager",),
+            (1,),
+            (1,),
+            None,
+            None,
+        ]
 
         conn.cursor.return_value = cursor
         mock_get_connection.return_value = conn
@@ -194,25 +215,16 @@ class TestAddSparePart:
 
         result = add_spare_part(
             part_id=10,
-            part_name="Brake Pad",
-            quantity=20,
-            user_role="manager"
+            user_id=2,  # Priya Manager
+            **VALID_PART_KWARGS
         )
 
-        mock_require_manager.assert_called_once_with("manager")
-
         calls = cursor.execute.call_args_list
+        insert_call = calls[-1]
 
-        assert calls[0].args == (
-            "SELECT 1 FROM SpareParts WHERE id = ?",
-            (10,)
-            )
-
-        assert "INSERT INTO SpareParts" in calls[1].args[0]
-        assert calls[1].args[1] == (
-            10,
-            "Brake Pad",
-            20
+        assert "INSERT INTO SpareParts" in insert_call.args[0]
+        assert insert_call.args[1] == (
+            10, "Brake Pad", "BRK-999", 1, 1, 20, 42.50, "A1-01", 5, "active"
         )
 
         conn.commit.assert_called_once()
@@ -227,63 +239,94 @@ class TestAddSparePart:
 
 
     @patch("tools.write_tools.get_connection")
-    @patch("tools.write_tools.require_manager")
-    def test_add_spare_part_negative_quantity(
-        self,
-        mock_require_manager,
-        mock_get_connection
-    ):
+    def test_add_spare_part_negative_quantity(self, mock_get_connection):
         with pytest.raises(
             ValueError,
             match="Quantity cannot be negative."
         ):
             add_spare_part(
                 part_id=10,
-                part_name="Brake Pad",
-                quantity=-5,
-                user_role="manager"
+                user_id=2,
+                **{**VALID_PART_KWARGS, "quantity": -5}
             )
 
         mock_get_connection.assert_not_called()
 
 
     @patch("tools.write_tools.get_connection")
-    @patch("tools.write_tools.require_manager")
-    def test_add_spare_part_empty_name(
-        self,
-        mock_require_manager,
-        mock_get_connection
-    ):
+    def test_add_spare_part_empty_name(self, mock_get_connection):
         with pytest.raises(
             ValueError,
             match="Part name cannot be empty."
         ):
             add_spare_part(
                 part_id=10,
-                part_name="   ",
-                quantity=10,
-                user_role="manager"
+                user_id=2,
+                **{**VALID_PART_KWARGS, "part_name": "   "}
             )
 
         mock_get_connection.assert_not_called()
+
+
+    @patch("tools.write_tools.get_connection")
+    def test_add_spare_part_unauthorized_role(self, mock_get_connection):
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        # Only the role lookup should fire before require_manager rejects.
+        cursor.fetchone.return_value = ("technician",)
+
+        conn.cursor.return_value = cursor
+        mock_get_connection.return_value = conn
+
+        with pytest.raises(PermissionError):
+            add_spare_part(
+                part_id=10,
+                user_id=1,  # Ahmed Samir, technician
+                **VALID_PART_KWARGS
+            )
+
+        conn.commit.assert_not_called()
+
+
+    @patch("tools.write_tools.get_connection")
+    def test_add_spare_part_nonexistent_user(self, mock_get_connection):
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        # No matching row for the user_id -> role lookup fails first.
+        cursor.fetchone.return_value = None
+
+        conn.cursor.return_value = cursor
+        mock_get_connection.return_value = conn
+
+        with pytest.raises(AuthorizationError):
+            add_spare_part(
+                part_id=10,
+                user_id=9999,
+                **VALID_PART_KWARGS
+            )
+
+        conn.commit.assert_not_called()
 
 
 class TestDeleteSparePart:
 
     @patch("tools.write_tools.spare_part_deleted")
     @patch("tools.write_tools.get_connection")
-    @patch("tools.write_tools.require_manager")
     def test_delete_spare_part_success(
         self,
-        mock_require_manager,
         mock_get_connection,
         mock_notification
     ):
         conn = MagicMock()
         cursor = MagicMock()
 
-        # Part exists
-        cursor.fetchone.return_value = (1,)
+        # Calls in order: _resolve_user_role, _part_exists.
+        cursor.fetchone.side_effect = [
+            ("manager",),
+            (1,),
+        ]
 
         conn.cursor.return_value = cursor
         mock_get_connection.return_value = conn
@@ -295,10 +338,8 @@ class TestDeleteSparePart:
 
         result = delete_spare_part(
             part_id=1,
-            user_role="manager"
+            user_id=2,  # Priya Manager
         )
-
-        mock_require_manager.assert_called_once_with("manager")
 
         conn.commit.assert_called_once()
         conn.close.assert_called_once()
@@ -309,16 +350,15 @@ class TestDeleteSparePart:
 
 
     @patch("tools.write_tools.get_connection")
-    @patch("tools.write_tools.require_manager")
-    def test_delete_spare_part_not_found(
-        self,
-        mock_require_manager,
-        mock_get_connection
-    ):
+    def test_delete_spare_part_not_found(self, mock_get_connection):
         conn = MagicMock()
         cursor = MagicMock()
 
-        cursor.fetchone.return_value = None
+        # Calls in order: _resolve_user_role, _part_exists (missing).
+        cursor.fetchone.side_effect = [
+            ("manager",),
+            None,
+        ]
 
         conn.cursor.return_value = cursor
         mock_get_connection.return_value = conn
@@ -329,12 +369,50 @@ class TestDeleteSparePart:
         ):
             delete_spare_part(
                 part_id=999,
-                user_role="manager"
+                user_id=2,
             )
 
         conn.commit.assert_not_called()
         conn.close.assert_called_once()
-        
+
+
+    @patch("tools.write_tools.get_connection")
+    def test_delete_spare_part_unauthorized_role(self, mock_get_connection):
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        cursor.fetchone.return_value = ("technician",)
+
+        conn.cursor.return_value = cursor
+        mock_get_connection.return_value = conn
+
+        with pytest.raises(PermissionError):
+            delete_spare_part(
+                part_id=1,
+                user_id=1,  # Ahmed Samir, technician
+            )
+
+        conn.commit.assert_not_called()
+
+
+    @patch("tools.write_tools.get_connection")
+    def test_delete_spare_part_nonexistent_user(self, mock_get_connection):
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        cursor.fetchone.return_value = None
+
+        conn.cursor.return_value = cursor
+        mock_get_connection.return_value = conn
+
+        with pytest.raises(AuthorizationError):
+            delete_spare_part(
+                part_id=1,
+                user_id=9999,
+            )
+
+        conn.commit.assert_not_called()
+
 
 
 # ============================================================

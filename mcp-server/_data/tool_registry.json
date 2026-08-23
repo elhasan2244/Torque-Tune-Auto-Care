@@ -1,0 +1,30 @@
+{
+  "memory_rag": [
+    "add_spare_part",
+    "check_stock",
+    "delete_spare_part",
+    "generate_inventory_report",
+    "search_company_knowledge",
+    "search_spare_part",
+    "suggest_alternative",
+    "update_inventory"
+  ],
+  "planning": [
+    "search_spare_part",
+    "check_stock",
+    "suggest_alternative"
+  ],
+  "purchase_order": [
+    "search_spare_part",
+    "check_stock"
+  ],
+  "inventory_approval": [
+    "check_stock",
+    "update_inventory",
+    "search_company_knowledge"
+  ],
+  "warranty": [
+    "search_company_knowledge",
+    "check_stock"
+  ]
+}

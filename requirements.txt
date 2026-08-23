@@ -43,3 +43,6 @@ networkx>=3.2
 # otherwise, same as mcp-server/rag/llm_client.py.
 langchain-core>=0.3
 langchain-anthropic>=1.1.0
+
+# --- Experimental UI (platform_streamlit/Home.py) ---
+streamlit>=1.38.0

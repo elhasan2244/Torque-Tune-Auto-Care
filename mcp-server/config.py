@@ -6,7 +6,8 @@ DATABASE_PATH = "databases/auto_care.db"
 
 ALLOWED_ROLES = {
     "admin",
-    "manager"
+    "manager",
+    "technician",
 }
 
 MIN_STOCK_THRESHOLD = 10

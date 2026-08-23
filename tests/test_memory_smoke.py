@@ -2,6 +2,8 @@ import sys
 import json
 from pathlib import Path
 
+import pytest
+
 # Setup paths to ensure imports work correctly
 ROOT = Path(__file__).resolve().parents[1]
 MCP_SERVER_ROOT = ROOT / "mcp-server"
@@ -12,21 +14,24 @@ for path in (str(ROOT), str(MCP_SERVER_ROOT), str(AGENT_ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-# ---------------------------------------------------------
-# Wire the demo database before importing memory modules
-# ---------------------------------------------------------
-import databases.db as db
-from demo_db import build_demo_connection
-
-# Override the default connection with the demo database
-db.get_connection = build_demo_connection
-
-# Now we can safely import the memory modules
+# Importing the memory modules no longer requires wiring the database
+# first: get_connection() is only called once a test actually calls into
+# EpisodicMemory/SemanticMemory, and the `demo_db_connection` fixture below
+# (from the root conftest.py) patches those modules' get_connection at
+# test time instead of once, permanently, at import time -- see conftest.py
+# for why that used to leak between test modules.
 from memory.short_term_memory import ShortTermMemory
 from memory.scratchpad import Scratchpad
 from memory.episodic_memory import EpisodicMemory
 from memory.semantic_memory import SemanticMemory
 from memory.memory_manager import MemoryManager
+
+
+@pytest.fixture(autouse=True)
+def _wire_demo_database(demo_db_connection):
+    """Every test in this module gets a fresh, isolated demo database;
+    the two that don't touch the DB (STM/Scratchpad) just ignore it."""
+    yield
 
 # ---------------------------------------------------------
 # Test Short-Term Memory

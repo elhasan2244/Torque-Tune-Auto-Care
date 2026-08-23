@@ -28,7 +28,9 @@ CREATE TABLE Categories (
 
 CREATE TABLE Suppliers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    phone TEXT,
+    email TEXT
 );
 
 CREATE TABLE SpareParts (
@@ -62,8 +64,54 @@ CREATE TABLE InventoryLogs (
     new_quantity INTEGER NOT NULL,
     action TEXT NOT NULL,
     reason TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (part_id) REFERENCES SpareParts(id),
     FOREIGN KEY (user_id) REFERENCES Users(id)
+);
+
+-- Warranty Claims (Final Project -- state_graph/graphs/warranty_graph.py).
+-- Mirrors databases/schema.sql's WarrantyClaims, translated to SQLite so
+-- the demo agent/graphs can exercise the full submit -> wait -> reject ->
+-- appeal -> wait loop end to end.
+CREATE TABLE WarrantyClaims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    part_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    inventory_log_id INTEGER NOT NULL,
+    claim_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN (
+        'submitted', 'awaiting_supplier', 'approved', 'rejected',
+        'appealed', 'appeal_approved', 'appeal_rejected', 'cancelled'
+    )),
+    policy_check TEXT,
+    appeal_argument TEXT,
+    supplier_response TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME,
+    FOREIGN KEY (part_id) REFERENCES SpareParts(id),
+    FOREIGN KEY (user_id) REFERENCES Users(id),
+    FOREIGN KEY (inventory_log_id) REFERENCES InventoryLogs(id)
+);
+
+-- Purchase Orders (Final Project -- state_graph/graphs/purchase_order_graph.py).
+-- Mirrors databases/schema.sql's PurchaseOrders. One row per per-supplier
+-- reorder batch that graph's Task Decomposition node builds.
+CREATE TABLE PurchaseOrders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER NOT NULL,
+    requested_by_user_id INTEGER NOT NULL,
+    po_code TEXT NOT NULL UNIQUE,
+    line_items TEXT NOT NULL,
+    total_cost REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN (
+        'draft', 'pending_approval', 'awaiting_supplier',
+        'confirmed', 'rejected', 'cancelled'
+    )),
+    supplier_response TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME,
+    FOREIGN KEY (supplier_id) REFERENCES Suppliers(id),
+    FOREIGN KEY (requested_by_user_id) REFERENCES Users(id)
 );
 
 -- ---------------------------------------------------------
@@ -99,16 +147,28 @@ INSERT INTO Users (name, email, role) VALUES
 
 INSERT INTO Categories (name) VALUES ('Brakes'), ('Engine');
 
-INSERT INTO Suppliers (name) VALUES ('NAPA Distribution');
+INSERT INTO Suppliers (name, email) VALUES
+    ('NAPA Distribution', 'orders@napadistribution.example'),
+    ('TorqueParts Direct', 'claims@torquepartsdirect.example');
 
 INSERT INTO SpareParts
     (part_name, part_number, category_id, supplier_id, quantity, price, location, minimum_stock, status)
 VALUES
     ('Front Brake Pad Set', 'BRK-001', 1, 1, 8, 42.50, 'A1-03', 5, 'active'),
     ('Rear Brake Pad Set',  'BRK-002', 1, 1, 2, 39.00, 'A1-04', 5, 'active'),
-    ('Timing Belt',         'ENG-010', 2, 1, 0, 65.00, 'B2-01', 3, 'discontinued');
+    ('Timing Belt',         'ENG-010', 2, 1, 0, 65.00, 'B2-01', 3, 'discontinued'),
+    -- part_number prefix TPD- matches supplier_warranty_terms.md's
+    -- WT-100 (TorqueParts Direct, 18-month window) section, so the
+    -- Warranty Claim graph's RAG grounding node has real, correct
+    -- policy text to retrieve for this part in the demo.
+    ('Front Brake Rotor',   'TPD-4471', 1, 2, 6, 58.00, 'A1-06', 4, 'active');
 
 INSERT INTO AlternativeParts (part_id, alternative_part_id) VALUES (1, 2);
+
+-- Receipt for the TPD- part above, 4 months ago -- inside WT-100's
+-- 18-month window, so a warranty claim on it is eligible by policy.
+INSERT INTO InventoryLogs (part_id, user_id, old_quantity, new_quantity, action, reason, created_at)
+VALUES (4, 2, 0, 6, 'increase', 'Initial stock receipt from TorqueParts Direct', datetime('now', '-4 months'));
 """
 
 

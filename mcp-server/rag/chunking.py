@@ -33,12 +33,26 @@ RESOURCES_DIR = Path(__file__).resolve().parent.parent / "resources"
 KB_DIR = RESOURCES_DIR / "knowledge_base"
 
 # doc_type is used later as a metadata-index field for pre-filtering.
-DOCUMENTS = [
-    {"path": RESOURCES_DIR / "company_policy.md", "doc_type": "policy"},
-    {"path": KB_DIR / "supplier_warranty_terms.md", "doc_type": "warranty"},
-    {"path": KB_DIR / "technical_service_bulletins.md", "doc_type": "tsb"},
-    {"path": KB_DIR / "diagnostic_repair_procedures.md", "doc_type": "procedure"},
-]
+#
+# Discovered dynamically (not a fixed list) so a document an admin adds
+# or removes at runtime through rag/registry.py is picked up the next
+# time the index is rebuilt -- no code change, no restart.
+_KNOWN_DOC_TYPES = {
+    "company_policy.md": "policy",
+    "supplier_warranty_terms.md": "warranty",
+    "technical_service_bulletins.md": "tsb",
+    "diagnostic_repair_procedures.md": "procedure",
+}
+
+
+def _discover_documents() -> list[dict]:
+    docs = [{"path": RESOURCES_DIR / "company_policy.md", "doc_type": "policy"}]
+    for path in sorted(KB_DIR.glob("*.md")):
+        docs.append({"path": path, "doc_type": _KNOWN_DOC_TYPES.get(path.name, "kb")})
+    return docs
+
+
+DOCUMENTS = _discover_documents()
 
 # Pulls out exact identifiers (TSB-2024-118, WT-100, supplier prefixes like
 # CAE-, IDS-, TPD-, MFC-) so they land in metadata, not just body text.
@@ -74,7 +88,7 @@ def _split_into_sections(markdown_text: str) -> list[dict]:
 
 def load_chunks() -> list[Chunk]:
     chunks: list[Chunk] = []
-    for doc in DOCUMENTS:
+    for doc in _discover_documents():
         path: Path = doc["path"]
         text = path.read_text(encoding="utf-8")
         for i, section in enumerate(_split_into_sections(text)):
@@ -91,7 +105,6 @@ def load_chunks() -> list[Chunk]:
                 )
             )
     return chunks
-
 
 if __name__ == "__main__":
     cs = load_chunks()
